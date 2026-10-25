@@ -4,12 +4,19 @@
 
 ## Overview
 
-This lab simulates SMB brute-force activity in a controlled virtual environment, detects it in Splunk, and automates case-note generation through the Splunk REST API.
+This lab simulates SMB brute-force activity in an isolated virtual environment, detects it in Splunk, and automates case-note generation through the Splunk REST API.
 
 The project demonstrates an end-to-end SOC workflow:
+
 - Threat simulation
 - Detection engineering
 - Alert triage documentation
+
+**Audience:** hiring managers and security engineers reviewing hands-on blue team work, and anyone rebuilding a similar home lab. Part of [Khaneil Campbell's](https://github.com/khancam15) portfolio; the full case study is at [khaneilcampbell.com](https://khaneilcampbell.com/soc-automation-lab.html).
+
+## Status
+
+Complete as a lab exercise. The attack was run once, the detection fired (81 failed logons in the recorded run), and the script generated the case note shown in the screenshots. This is a home lab, not a production detection; see [Limitations](#limitations).
 
 ## Tools and Technologies
 
@@ -19,102 +26,100 @@ The project demonstrates an end-to-end SOC workflow:
 | Windows 11 VM | Attack target |
 | Splunk Enterprise | Ingestion, search, and alerting |
 | Splunk Universal Forwarder | Windows log forwarding |
-| Python 3 | REST API automation |
+| Python 3 (`requests`) | REST API automation |
 | VirtualBox | Virtual networking and isolation |
 | smbclient | SMB authentication attempt simulation |
 
 ## Lab Architecture
 
 ```text
-[Kali Linux VM] ---(Host-only Network)---> [Windows 11 VM]
-                                                                  |
-                                                [Splunk Universal Forwarder]
-                                                                  |
-                                                [Splunk Enterprise (indexer)]
-                                                                  |
-                                                     [Python REST API Client]
-                                                                  |
-                                                     [Automated Case Notes]
+[Kali Linux VM] --(host-only network)--> [Windows 11 VM]
+                                               |
+                                   Splunk Universal Forwarder
+                                   (Windows Security log, EventCode 4625)
+                                               |
+                                               v
+                                   [Splunk Enterprise (indexer)]
+                                               |
+                                   REST API, port 8089
+                                               |
+                                               v
+                                   [soc_automation.py]
+                                               |
+                                               v
+                                   [Markdown case note in notes/]
 ```
+
+Data path: failed SMB logons on the Windows VM are written to the Security log as EventCode 4625, forwarded to Splunk, aggregated by account and source address in five minute buckets, and pulled by the script, which writes one case note per run.
 
 ## Lab Objectives
 
 - Simulate SMB brute-force attempts from Kali to Windows 11
 - Forward Windows Security logs (EventCode 4625) to Splunk
 - Build SPL detections for brute-force behavior
-- Pull detection results programmatically from Splunk REST API
+- Pull detection results programmatically from the Splunk REST API
 - Generate structured SOC case notes automatically
 
-## Developer Cybersecurity Guardrails
+## Detection logic
 
-Use this repository only in an isolated and authorized lab.
+Two versions of the search exist:
 
-- Never run attack simulation commands against production or public systems
-- Keep all VMs on a lab-only host-only network segment
-- Use test accounts only; do not reuse real user credentials
-- Rotate any lab credentials after demos or screenshots
-- Use least privilege for Splunk API users and tokens
-- Store secrets in environment variables, not source files
-- Redact IPs, hostnames, usernames, and tokens before publishing screenshots
+- [`queries/brute_force_detection.spl`](queries/brute_force_detection.spl): the search saved in Splunk. Ten or more failed logons from one source against one account within five minutes, excluding loopback, is flagged High.
+- The `SPL_QUERY` constant in `soc_automation.py`: the same threshold, extended to collect logon types, failure reasons and host, and to grade severity (20 or more failures is High, otherwise Medium).
 
-## GitHub Best Practices for This Lab
+Keep both in step when tuning the threshold.
 
-- Enable branch protection on main:
-  - Require pull requests
-  - Require at least 1 approval
-  - Require status checks before merge
-- Use small, focused pull requests with clear titles
-- Use conventional commit messages where possible
-- Require secret scanning and Dependabot alerts in repository settings
-- Sign commits and tag releases for portfolio milestones
-- Keep documentation and evidence in sync for every detection change
+## Running the automation
 
-## Suggested Secure Development Workflow
+Prerequisites: Splunk running locally with the management port (8089) reachable, a lab account with search permission, Python 3 and the dependency in `requirements.txt`.
 
-1. Create a feature branch for each lab change.
-2. Update detection, docs, and evidence together.
-3. Run quick quality checks before commit:
-    - SPL query sanity check in Splunk
-    - Markdown link and formatting check
-    - Manual review for secret leakage
-4. Open a pull request with:
-    - What changed
-    - Why it changed
-    - Validation evidence (screenshots or output)
-5. Merge after review and passing checks.
+```bash
+pip install -r requirements.txt
+export SPLUNK_USER="<lab account>"
+export SPLUNK_PASS="<lab password>"
+python3 soc_automation.py
+```
+
+The script authenticates, submits the search as a blocking job, fetches the results as JSON, and writes `notes/soc_case_<timestamp>.md` with one section per alert and recommended next actions. It exits with a message, not a traceback, when Splunk is unreachable, when credentials are missing, or when no alert meets the threshold.
+
+Configuration lives at the top of the script: `SPLUNK_HOST` (default `https://localhost:8089`) and `OUTPUT_DIR` (default `notes`). Credentials are read only from the environment. TLS verification is disabled for the self-signed local Splunk certificate; see Limitations.
+
+Generated notes match the `soc_case_*.md` pattern in `.gitignore`, so they stay out of git.
+
+## Limitations
+
+- Single host, single tenant: the detection assumes `index=main` and the Windows event sourcetype used in this lab.
+- `SPLUNK_HOST` is hard coded for a local instance and certificate verification is turned off. Both are acceptable for an isolated lab and would need to change for any shared environment.
+- The threshold (10 failures in five minutes) was tuned against one simulated attack, not against baseline traffic.
+- The case note is a Markdown file; nothing is pushed to a ticketing system.
 
 ## Repository Structure
 
 ```text
 soc-automation-splunk-bruteforce-lab/
-|-- queries/          # SPL detection queries used in Splunk
-|-- screenshots/      # Lab evidence and validation screenshots
-|-- .gitignore
-|-- README.md
-|-- CONTRIBUTING.md   # Branch, commit, and pull request conventions
-|-- LICENSE           # MIT License
-|-- SECURITY.md       # Lab and GitHub security practices
-|-- soc_automation.py # Splunk REST API triage and case note automation
-|-- WALKTHROUGH.md    # Step-by-step walkthrough
+|-- queries/
+|   `-- brute_force_detection.spl   # SPL detection saved in Splunk
+|-- screenshots/                     # Lab evidence, one image per phase
+|-- soc_automation.py                # Splunk REST API triage and case note automation
+|-- requirements.txt                 # Python dependency (requests)
+|-- WALKTHROUGH.md                   # Step-by-step build and attack walkthrough
+|-- SECURITY.md                      # Lab and GitHub security practices
+|-- CONTRIBUTING.md                  # Branch, commit, and pull request conventions
+|-- LICENSE                          # MIT License
+`-- .gitignore
 ```
 
 ## Screenshots
 
-See the screenshots directory for evidence of each lab phase, including attack execution, detections, and automated output.
+The `screenshots/` directory holds evidence of each phase in order: static IP setup, connectivity check, the SMB brute force, Splunk aggregation and threshold detection, event code distribution, the script run, and the generated case note.
 
 ## Walkthrough
 
-See WALKTHROUGH.md for the full step-by-step guide.
+See [WALKTHROUGH.md](WALKTHROUGH.md) for the full step-by-step guide, from safety pre-checks to validation.
 
-## Core Project Files
+## Safety and contribution rules
 
-- queries/ (SPL detection queries)
-- screenshots/ (lab evidence)
-- .gitignore
-- README.md
-- SECURITY.md (security policy and reporting guidance)
-- soc_automation.py (Splunk REST API automation; reads credentials from SPLUNK_USER and SPLUNK_PASS)
-- WALKTHROUGH.md
+Use this repository only in an isolated and authorized lab. Never run the attack simulation against production, public or third party systems, use test accounts only, and redact IPs, hostnames, usernames and tokens before publishing screenshots. The full baseline is in [SECURITY.md](SECURITY.md); branch and pull request conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Built with AI Assistance
 
@@ -140,8 +145,6 @@ I used Claude, Anthropic's AI assistant, as a working partner throughout this la
 
 ## Author
 
-Khaneil Campbell | khancam15
+Khaneil Campbell | [khancam15](https://github.com/khancam15)
 
 Cybersecurity | SOC Analyst | Blue Team
-
-
