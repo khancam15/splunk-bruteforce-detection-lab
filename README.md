@@ -1,6 +1,6 @@
-# SOC Automation and Detection Engineering Lab
+# Splunk Brute Force Detection Lab
 
-**SMB brute-force simulation → Splunk detection → automated case triage with Python and the Splunk REST API**
+**SOC automation and detection engineering lab: SMB brute-force simulation → Splunk detection → automated case triage with Python and the Splunk REST API**
 
 ## Overview
 
@@ -96,7 +96,7 @@ Generated notes match the `soc_case_*.md` pattern in `.gitignore`, so they stay 
 ## Repository Structure
 
 ```text
-soc-automation-splunk-bruteforce-lab/
+ssplunk-bruteforce-detection-lab/
 |-- queries/
 |   `-- brute_force_detection.spl   # SPL detection saved in Splunk
 |-- screenshots/                     # Lab evidence, one image per phase
