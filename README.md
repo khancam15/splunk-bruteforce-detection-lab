@@ -1,4 +1,4 @@
-# SOC Automation and Detection Engineering Lab
+# Splunk Brute Force Detection Lab
 
 **SMB brute-force simulation → Splunk detection → automated case triage with Python and the Splunk REST API**
 
