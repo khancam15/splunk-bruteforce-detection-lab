@@ -59,5 +59,3 @@ soc_case_*.md
 .vscode/
 .idea/
 
-# Repository metadata folders to exclude
-.github/
