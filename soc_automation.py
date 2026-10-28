@@ -16,11 +16,19 @@ Usage:
     export SPLUNK_PASS="<lab password>"
     python3 soc_automation.py
 
+Exit codes (so a scheduler knows what to do next):
+    0   done, with or without alerts
+    1   needs a person: credentials missing or rejected, or Splunk sent
+        a response the script doesn't understand
+    75  temporary: Splunk unreachable or busy after retries, try later
+
 Requirements:
     pip install requests urllib3
 """
 
 import os
+import sys
+import time
 import requests
 import urllib3
 from datetime import datetime
@@ -33,6 +41,41 @@ SPLUNK_HOST  = "https://localhost:8089"
 SPLUNK_USER  = os.getenv("SPLUNK_USER")
 SPLUNK_PASS  = os.getenv("SPLUNK_PASS")
 OUTPUT_DIR   = "notes"
+
+EXIT_OK        = 0
+EXIT_NEEDS_YOU = 1
+EXIT_TRY_LATER = 75      # EX_TEMPFAIL, same code the commerce pipeline uses
+
+# ── Retries ───────────────────────────────────────────────────────────────────
+# Splunk restarts and busy search heads are common in a lab. Retry those, but
+# never a rejected login or a bad request: repeating them can't help.
+RETRY_DELAYS     = (2, 4)                 # seconds between tries
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+class TemporaryError(Exception):
+    """Splunk was unreachable or busy on every try."""
+
+
+def _request(method, url, **kwargs):
+    """requests.get/post with retries on connection errors, timeouts and 429/5xx."""
+    send = getattr(requests, method)
+    retry_delays = RETRY_DELAYS
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            response = send(url, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            problem = f"{type(e).__name__}: {e}"
+        else:
+            status = getattr(response, "status_code", 200)
+            if status not in RETRYABLE_STATUS:
+                response.raise_for_status()
+                return response
+            problem = f"HTTP {status}"
+        if attempt < len(retry_delays):
+            print(f"[~] {problem}. Retrying in {retry_delays[attempt]}s...")
+            time.sleep(retry_delays[attempt])
+    raise TemporaryError(problem)
 
 # ── Detection Query ───────────────────────────────────────────────────────────
 SPL_QUERY = """
@@ -61,8 +104,7 @@ def get_session_key():
         "output_mode": "json"
     }
     print("[*] Authenticating to Splunk REST API...")
-    response = requests.post(url, data=data, verify=False, timeout=30)
-    response.raise_for_status()
+    response = _request("post", url, data=data, verify=False, timeout=30)
     key = response.json()["sessionKey"]
     print("[+] Authentication successful.")
     return key
@@ -79,8 +121,7 @@ def run_search(session_key):
         "exec_mode":   "blocking"
     }
     print("[*] Running brute force detection search...")
-    response = requests.post(url, headers=headers, data=data, verify=False, timeout=120)
-    response.raise_for_status()
+    response = _request("post", url, headers=headers, data=data, verify=False, timeout=120)
     sid = response.json()["sid"]
     print(f"[+] Search job completed. SID: {sid}")
     return sid
@@ -93,8 +134,7 @@ def get_results(session_key, sid):
     url     = f"{SPLUNK_HOST}/services/search/jobs/{sid}/results"
     params  = {"output_mode": "json", "count": 0}
     print("[*] Fetching alert results...")
-    response = requests.get(url, headers=headers, params=params, verify=False, timeout=30)
-    response.raise_for_status()
+    response = _request("get", url, headers=headers, params=params, verify=False, timeout=30)
     results = response.json()["results"]
     print(f"[+] {len(results)} alert(s) found.")
     return results
@@ -151,31 +191,41 @@ def generate_case_note(alerts):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    print("=" * 55)
-    print("  SOC Automation Script - SMB Brute Force Detection")
-    print("  khancam15 | SOC Automation Lab")
-    print("=" * 55 + "\n")
-
+def main():
+    """Run the triage once and return an exit code (see the top of the file)."""
     if not SPLUNK_USER or not SPLUNK_PASS:
-        raise SystemExit("[!] Set SPLUNK_USER and SPLUNK_PASS environment variables first.")
+        print("[!] Set SPLUNK_USER and SPLUNK_PASS environment variables first.")
+        return EXIT_NEEDS_YOU
 
     try:
         session_key = get_session_key()
         sid         = run_search(session_key)
         alerts      = get_results(session_key, sid)
-
-        if not alerts:
-            print("[!] No alerts found matching threshold. Nothing to report.")
-        else:
-            output = generate_case_note(alerts)
-            print(f"\n[*] Done. Review your case note: {output}")
-
-    except requests.exceptions.ConnectionError:
-        print("[!] Could not connect to Splunk. Is Splunk running on localhost:8089?")
+    except TemporaryError as e:
+        print(f"[!] Could not reach Splunk at {SPLUNK_HOST} after retries ({e}). Is Splunk running? Try again later.")
+        return EXIT_TRY_LATER
     except requests.exceptions.HTTPError as e:
-        print(f"[!] HTTP error: {e}")
-    except KeyError as e:
-        print(f"[!] Unexpected response format. Missing key: {e}")
-    except Exception as e:
-        print(f"[!] Unexpected error: {e}")
+        status = getattr(e.response, "status_code", None)
+        if status == 401:
+            print("[!] Splunk rejected the login. Check SPLUNK_USER and SPLUNK_PASS.")
+        else:
+            print(f"[!] HTTP error: {e}")
+        return EXIT_NEEDS_YOU
+    except (KeyError, ValueError) as e:
+        print(f"[!] Unexpected response format: {e}")
+        return EXIT_NEEDS_YOU
+
+    if not alerts:
+        print("[!] No alerts found matching threshold. Nothing to report.")
+    else:
+        output = generate_case_note(alerts)
+        print(f"\n[*] Done. Review your case note: {output}")
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    print("=" * 55)
+    print("  SOC Automation Script - SMB Brute Force Detection")
+    print("  khancam15 | SOC Automation Lab")
+    print("=" * 55 + "\n")
+    sys.exit(main())
