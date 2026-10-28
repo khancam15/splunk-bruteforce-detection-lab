@@ -22,11 +22,13 @@ ALERT = {
 
 
 class FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self.payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            raise soc_automation.requests.exceptions.HTTPError(f"{self.status_code}", response=self)
 
     def json(self):
         return self.payload
@@ -104,3 +106,58 @@ def test_case_note_tolerates_missing_fields(tmp_path, monkeypatch, missing):
     note = Path(soc_automation.generate_case_note([alert])).read_text()
 
     assert "- Alerts found: **1**" in note
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    waits = []
+    monkeypatch.setattr(soc_automation.time, "sleep", waits.append)
+    return waits
+
+
+def scripted_post(monkeypatch, steps):
+    """Replace requests.post with one that plays back steps (a response or an exception)."""
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        step = steps[len(calls) - 1]
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    monkeypatch.setattr(soc_automation.requests, "post", fake_post)
+    return calls
+
+
+def test_retries_a_splunk_restart_then_succeeds(monkeypatch, no_sleep):
+    exc = soc_automation.requests.exceptions
+    calls = scripted_post(monkeypatch, [exc.ConnectionError("refused"), FakeResponse({}, 503), FakeResponse({"sessionKey": "k"})])
+
+    assert soc_automation.get_session_key() == "k"
+    assert len(calls) == 3
+    assert no_sleep == list(soc_automation.RETRY_DELAYS)
+
+
+def test_never_retries_a_rejected_login(monkeypatch, no_sleep):
+    calls = scripted_post(monkeypatch, [FakeResponse({}, 401), FakeResponse({"sessionKey": "k"})])
+    monkeypatch.setattr(soc_automation, "SPLUNK_USER", "analyst")
+    monkeypatch.setattr(soc_automation, "SPLUNK_PASS", "wrong")
+
+    assert soc_automation.main() == soc_automation.EXIT_NEEDS_YOU
+    assert len(calls) == 1
+    assert no_sleep == []
+
+
+def test_unreachable_splunk_exits_try_later(monkeypatch, no_sleep):
+    exc = soc_automation.requests.exceptions
+    scripted_post(monkeypatch, [exc.Timeout("slow")] * 3)
+    monkeypatch.setattr(soc_automation, "SPLUNK_USER", "analyst")
+    monkeypatch.setattr(soc_automation, "SPLUNK_PASS", "pw")
+
+    assert soc_automation.main() == soc_automation.EXIT_TRY_LATER
+
+
+def test_missing_credentials_need_a_person(monkeypatch):
+    monkeypatch.setattr(soc_automation, "SPLUNK_USER", None)
+    assert soc_automation.main() == soc_automation.EXIT_NEEDS_YOU

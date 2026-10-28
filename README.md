@@ -113,7 +113,7 @@ See WALKTHROUGH.md for the full step-by-step guide.
 - .gitignore
 - README.md
 - SECURITY.md (security policy and reporting guidance)
-- soc_automation.py (Splunk REST API automation; reads credentials from SPLUNK_USER and SPLUNK_PASS)
+- soc_automation.py (Splunk REST API automation; reads credentials from SPLUNK_USER and SPLUNK_PASS, retries while Splunk is restarting, and exits 0 done, 1 needs you, 75 try later)
 - WALKTHROUGH.md
 
 ## Built with AI Assistance
