@@ -1,6 +1,6 @@
 # Runtime
 requests>=2.31
-urllib3>=2.0
+urllib3>=2.8.0
 # Checks run by CI
 pytest>=8.0
 ruff>=0.6
